@@ -3883,7 +3883,85 @@
             })();
             // ───── 同步历史记录系统 END ─────
 
-            // ★ 核心功能：一键生成 Excel 并调用 GitHub API Push（同时推送两个文件） ★
+            // ───── 同步历史记录系统 ─────
+            function getSyncLog() {
+                try { return JSON.parse(localStorage.getItem('sync_log') || '[]'); } catch(e) { return []; }
+            }
+            function saveSyncLog(log) {
+                if (log.length > 100) log = log.slice(-100);
+                localStorage.setItem('sync_log', JSON.stringify(log));
+            }
+            function addSyncLogEntry(filesStatus) {
+                const log = getSyncLog();
+                const entry = {
+                    timestamp: new Date().toISOString(),
+                    files: filesStatus,
+                    overall: filesStatus.every(f => f.status === 'ok') ? 'success' : 'partial'
+                };
+                log.push(entry);
+                saveSyncLog(log);
+                renderSyncLog();
+            }
+            function renderSyncLog() {
+                const log = getSyncLog();
+                const badge = document.getElementById('syncLogBadge');
+                const clearBtn = document.getElementById('clearSyncLogBtn');
+                const listEl = document.getElementById('syncLogList');
+                if (log.length === 0) {
+                    badge.classList.add('hidden');
+                    clearBtn.classList.add('hidden');
+                    listEl.innerHTML = '<div class="px-4 py-6 text-center text-[11px] text-[var(--text-secondary)]">暂无同步记录</div>';
+                    return;
+                }
+                badge.classList.remove('hidden');
+                badge.textContent = log.length;
+                clearBtn.classList.remove('hidden');
+                let html = '';
+                [...log].reverse().forEach(entry => {
+                    const dt = new Date(entry.timestamp);
+                    const timeStr = dt.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+                    const sIcon = entry.overall === 'success' ? '\u2705' : '\u26a0\ufe0f';
+                    html += '<div class="px-4 py-2.5 hover:bg-[var(--table-hover)] transition-colors">';
+                    html += '<div class="flex items-center justify-between mb-1">';
+                    html += '<span class="text-[10px] text-[var(--text-secondary)] font-mono">' + timeStr + '</span>';
+                    html += '<span class="text-[10px] font-bold ' + (entry.overall === 'success' ? 'text-emerald-600' : 'text-amber-600') + '">' + sIcon + ' ' + (entry.overall === 'success' ? '全部成功' : '部分失败') + '</span></div>';
+                    entry.files.forEach(f => {
+                        const fIcon = f.status === 'ok' ? '\u2705' : '\u274c';
+                        const fColor = f.status === 'ok' ? 'text-emerald-600' : 'text-red-500';
+                        html += '<div class="flex items-center gap-2 text-[11px] ' + fColor + ' ml-2"><span>' + fIcon + ' ' + f.name + '</span>';
+                        if (f.message) html += '<span class="text-[10px] opacity-70 truncate max-w-[200px]" title="' + f.message.replace(/"/g, '&quot;') + '">' + f.message + '</span>';
+                        html += '</div>';
+                    });
+                    html += '</div>';
+                });
+                listEl.innerHTML = html;
+            }
+            (function initSyncLogPanel() {
+                const header = document.getElementById('syncLogHeader');
+                const body = document.getElementById('syncLogBody');
+                const chevron = document.getElementById('syncLogChevron');
+                header.addEventListener('click', () => {
+                    if (body.classList.contains('hidden')) {
+                        body.classList.remove('hidden');
+                        chevron.style.transform = 'rotate(180deg)';
+                    } else {
+                        body.classList.add('hidden');
+                        chevron.style.transform = 'rotate(0deg)';
+                    }
+                });
+                document.getElementById('clearSyncLogBtn').addEventListener('click', e => {
+                    e.stopPropagation();
+                    if (confirm('确定要清空所有同步历史记录吗？')) {
+                        localStorage.removeItem('sync_log');
+                        renderSyncLog();
+                        showToast('🗑️ 同步历史已清空');
+                    }
+                });
+                renderSyncLog();
+            })();
+            // ───── 同步历史记录系统 END ─────
+
+            // ★ 核心功能：一键同步两个 Excel 文件到 GitHub ★
             document.getElementById('syncGhBtn').addEventListener('click', async () => {
                 const ghConfig = JSON.parse(localStorage.getItem('gh_config') || '{}');
                 if (!ghConfig.token || !ghConfig.repo) {
@@ -3892,32 +3970,13 @@
                 }
                 extractGridDataToMemory();
                 showLoading();
-                showToast('🔍 正在验证仓库连接...', false);
+                showToast('📦 正在打包数据...', false);
                 try {
                     const branch = ghConfig.branch || 'main';
-                                        // ★ 仓库验证（带详细调试信息）
-                    let repoCheckRes;
-                    try {
-                        repoCheckRes = await fetch('https://api.github.com/repos/' + ghConfig.repo, {
-                            headers: { 'Authorization': 'Bearer ' + ghConfig.token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }
-                        });
-                    } catch (netErr) {
-                        throw new Error('网络请求失败，无法连接 GitHub API。请检查网络或尝试刷新页面重试。详情: ' + netErr.message);
-                    }
-                    if (!repoCheckRes.ok) {
-                        let errDetail = '';
-                        try { const j = await repoCheckRes.json(); errDetail = j.message || ''; } catch(e) {}
-                        const statusText = repoCheckRes.status === 404 ? '(仓库不存在或无访问权限)' : repoCheckRes.status === 401 ? '(Token无效)' : '';
-                        throw new Error('仓库验证失败 HTTP ' + repoCheckRes.status + ' ' + statusText + '。请检查：\n1. 仓库路径应为 Owner/Repo 格式\n2. Token 需勾选 repo 权限\n3. Token 属于对应账号\n' + (errDetail ? 'GitHub: ' + errDetail : ''));
-                    }
                     const parsedSum = [], parsedDiff = [];
                     rawSummaryData.forEach(r => { const p = parseSummaryRow(r); if(p && p.totalChecks > 0) parsedSum.push(p); });
                     rawDiffData.forEach(r => { const p = parseDiffRow(r); if(p) parsedDiff.push(p); });
                     processParsedData(parsedSum, parsedDiff);
-
-                    // 注意：空仓库没有默认分支，GitHub 会在首次推送时自动创建
-                    const apiHeaders = { 'Authorization': 'Bearer ' + ghConfig.token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-
                     const filesToSync = [
                         { dataArray: rawDiffData, fileName: '月差异明细表.xlsx', label: '差异明细表' },
                         { dataArray: rawSummaryData, fileName: '月汇总表.xlsx', label: '汇总表' }
@@ -3933,31 +3992,22 @@
                             const base64Content = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
                             const apiUrl = 'https://api.github.com/repos/' + ghConfig.repo + '/contents/' + encodeURIComponent(file.fileName);
                             let sha = '';
-                            try {
-                                const getRes = await fetch(apiUrl + '?ref=' + branch, { headers: apiHeaders });
-                                if (getRes.ok) { const j = await getRes.json(); sha = j.sha; }
-                                else if (getRes.status !== 404) { const j = await getRes.json().catch(() => ({})); throw new Error(j.message || '获取文件信息失败 (HTTP ' + getRes.status + ')'); }
-                            } catch(e) { /* 获取SHA失败，按新文件处理 */ }
-
+                            const getRes = await fetch(apiUrl + '?ref=' + branch, {
+                                headers: { 'Authorization': 'token ' + ghConfig.token }
+                            });
+                            if (getRes.ok) { const j = await getRes.json(); sha = j.sha; }
+                            else if (getRes.status !== 404) { console.warn('GET file info non-404:', getRes.status); }
                             showToast('🚀 正在推送「' + file.label + '」到云端...', false);
                             const putBody = { message: '🔧 在线看板自动同步：更新了 [' + file.fileName + ']', content: base64Content, branch: branch };
                             if (sha) putBody.sha = sha;
-                            
-                            let putRes;
-                            try {
-                                putRes = await fetch(apiUrl, {
-                                    method: 'PUT',
-                                    headers: Object.assign({}, apiHeaders, { 'Content-Type': 'application/json' }),
-                                    body: JSON.stringify(putBody)
-                                });
-                            } catch (putNetErr) {
-                                throw new Error('网络推送失败: ' + putNetErr.message);
-                            }
-                            
-                            if (!putRes.ok) { 
-                                let errMsg = '推送失败 (HTTP ' + putRes.status + ')';
-                                try { const err = await putRes.json(); errMsg = err.message || errMsg; } catch(e) {}
-                                throw new Error(errMsg); 
+                            const putRes = await fetch(apiUrl, {
+                                method: 'PUT',
+                                headers: { 'Authorization': 'token ' + ghConfig.token, 'Content-Type': 'application/json' },
+                                body: JSON.stringify(putBody)
+                            });
+                            if (!putRes.ok) {
+                                const err = await putRes.json().catch(() => ({}));
+                                throw new Error(err.message || '推送失败 (HTTP ' + putRes.status + ')');
                             }
                             filesStatus.push({ name: file.fileName, status: 'ok', message: '推送成功' });
                             totalSuccess++;
