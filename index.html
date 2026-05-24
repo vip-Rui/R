@@ -3936,7 +3936,7 @@
                         const errDetails = filesStatus.map(f => f.name + ': ' + f.message).join(' | ');
                         showToast('❌ 同步全部失败 | ' + errDetails, true);
                     }
-                    if (totalSuccess > 0) setTimeout(() => { fetchRemoteData(); }, 3000);
+                    if (totalSuccess > 0) { showToast('🔄 看板数据已刷新', false); }
                 } catch (e) {
                     console.error(e);
                     showToast('同步异常: ' + e.message, true);
