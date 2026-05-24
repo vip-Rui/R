@@ -3899,11 +3899,22 @@
                             showToast('🚀 正在推送「' + file.label + '」...', false);
                             const putBody = { message: '🔧 在线看板自动同步：更新了 [' + file.fileName + ']', content: base64Content, branch: branch };
                             if (sha) putBody.sha = sha;
-                            const putRes = await fetch(apiUrl, {
+                            let putRes = await fetch(apiUrl, {
                                 method: 'PUT',
                                 headers: { 'Authorization': 'token ' + ghConfig.token, 'Content-Type': 'application/json' },
                                 body: JSON.stringify(putBody)
                             });
+                            // 空仓库没有默认分支：去掉 branch 参数重试
+                            if (!putRes.ok && putRes.status === 404) {
+                                showToast('🔄 检测到空仓库，正在自动初始化...', false);
+                                const putBodyNoBranch = { message: putBody.message, content: putBody.content };
+                                if (sha) putBodyNoBranch.sha = sha;
+                                putRes = await fetch(apiUrl, {
+                                    method: 'PUT',
+                                    headers: { 'Authorization': 'token ' + ghConfig.token, 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(putBodyNoBranch)
+                                });
+                            }
                             if (!putRes.ok) {
                                 let errMsg = '推送失败 HTTP ' + putRes.status;
                                 try { const j = await putRes.json(); errMsg = j.message || errMsg; } catch(e) {}
