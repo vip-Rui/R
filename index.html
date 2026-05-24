@@ -3255,12 +3255,42 @@
                 }
             }
 
-            async function fetchRemoteData(skipCache = false) {
+            async function fetchRemoteData() {
                 showLoading();
                 let loaded = false;
 
-                // 如果不跳过缓存，优先从 localStorage 加载
-                if (!skipCache) {
+                // 优先级1：始终尝试从 GitHub API 拉取最新数据
+                const ghConfig = JSON.parse(localStorage.getItem('gh_config') || '{}');
+                if (ghConfig.token && ghConfig.repo) {
+                    try {
+                        showToast('正在从 GitHub 拉取最新数据...', false);
+                        const branch = ghConfig.branch || 'main';
+                        const [summaryRes, diffRes] = await Promise.all([
+                            fetch('https://api.github.com/repos/' + ghConfig.repo + '/contents/' + encodeURIComponent('月汇总表.xlsx') + '?ref=' + branch, {
+                                headers: { 'Authorization': 'token ' + ghConfig.token }
+                            }),
+                            fetch('https://api.github.com/repos/' + ghConfig.repo + '/contents/' + encodeURIComponent('月差异明细表.xlsx') + '?ref=' + branch, {
+                                headers: { 'Authorization': 'token ' + ghConfig.token }
+                            })
+                        ]);
+                        if (summaryRes.ok && diffRes.ok) {
+                            const sJson = await summaryRes.json();
+                            const dJson = await diffRes.json();
+                            const sBytes = Uint8Array.from(atob(sJson.content), c => c.charCodeAt(0));
+                            const dBytes = Uint8Array.from(atob(dJson.content), c => c.charCodeAt(0));
+                            parseBuffers(sBytes.buffer, dBytes.buffer);
+                            try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
+                            debouncedFullRefresh();
+                            showToast('✅ 已从 GitHub 拉取最新数据', false);
+                            loaded = true;
+                        } else {
+                            console.warn('GitHub 拉取失败: HTTP ' + summaryRes.status + ' / ' + diffRes.status);
+                        }
+                    } catch(ghErr) { console.warn('GitHub 拉取异常:', ghErr); }
+                }
+
+                // 优先级2：从 localStorage 加载缓存数据
+                if (!loaded) {
                     const cachedSummary = localStorage.getItem('board_summary_data');
                     const cachedDiff = localStorage.getItem('board_diff_data');
                     if (cachedSummary && cachedDiff) {
@@ -3280,40 +3310,7 @@
                     }
                 }
 
-                // 尝试从 GitHub API 拉取（仅当 skipCache=true 或缓存为空时）
-                if (!loaded) {
-                    const ghConfig = JSON.parse(localStorage.getItem('gh_config') || '{}');
-                    if (ghConfig.token && ghConfig.repo) {
-                        try {
-                            showToast('正在从 GitHub 拉取最新数据...', false);
-                            const branch = ghConfig.branch || 'main';
-                            const [summaryRes, diffRes] = await Promise.all([
-                                fetch('https://api.github.com/repos/' + ghConfig.repo + '/contents/' + encodeURIComponent('月汇总表.xlsx') + '?ref=' + branch, {
-                                    headers: { 'Authorization': 'token ' + ghConfig.token }
-                                }),
-                                fetch('https://api.github.com/repos/' + ghConfig.repo + '/contents/' + encodeURIComponent('月差异明细表.xlsx') + '?ref=' + branch, {
-                                    headers: { 'Authorization': 'token ' + ghConfig.token }
-                                })
-                            ]);
-                            if (summaryRes.ok && diffRes.ok) {
-                                const sJson = await summaryRes.json();
-                                const dJson = await diffRes.json();
-                                // 正确解码 base64 二进制数据
-                                const sBytes = Uint8Array.from(atob(sJson.content), c => c.charCodeAt(0));
-                                const dBytes = Uint8Array.from(atob(dJson.content), c => c.charCodeAt(0));
-                                parseBuffers(sBytes.buffer, dBytes.buffer);
-                                try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
-                                debouncedFullRefresh();
-                                showToast('✅ 已从 GitHub 拉取最新数据', false);
-                                loaded = true;
-                            } else {
-                                console.warn('GitHub 拉取失败: HTTP ' + summaryRes.status + ' / ' + diffRes.status);
-                            }
-                        } catch(ghErr) { console.warn('GitHub 拉取异常:', ghErr); }
-                    }
-                }
-
-                // 尝试本地文件
+                // 优先级3：尝试本地文件
                 if (!loaded) {
                     try {
                         showToast('正在从本地拉取最新数据中...', false);
@@ -3341,7 +3338,7 @@
                 hideLoading();
             }
             
-                    function processExcelFiles(files) {
+          function processExcelFiles(files) {
                 if(files.length !== 2){ 
                     showToast('需要同时提交【汇总表】和【差异明细表】两个核心文件。', true); 
                     return; 
