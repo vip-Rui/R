@@ -3248,10 +3248,11 @@
                     }
 
                     processParsedData(sRows, dRows);
+                    return true;
                 } catch (e) {
                     console.error("数据解析异常:", e);
                     showToast('云端表格解析失败: ' + e.message, true);
-                    loadMockData(); // 解析失败则托底加载演示数据
+                    return false;
                 }
             }
 
@@ -3293,15 +3294,35 @@
                             })
                         ]);
                         if (summaryRes.ok && diffRes.ok) {
-                            const sJson = await summaryRes.json();
-                            const dJson = await diffRes.json();
-                            const sBytes = Uint8Array.from(atob(sJson.content), c => c.charCodeAt(0));
-                            const dBytes = Uint8Array.from(atob(dJson.content), c => c.charCodeAt(0));
-                            parseBuffers(sBytes.buffer, dBytes.buffer);
-                            try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
-                            debouncedFullRefresh();
-                            showToast('✅ 已从 GitHub 更新最新数据', false);
-                            loaded = true;
+                            let parseOk = false;
+                            // 方式A：base64 解码
+                            try {
+                                const sJson = await summaryRes.json();
+                                const dJson = await diffRes.json();
+                                const sBytes = Uint8Array.from(atob(sJson.content), c => c.charCodeAt(0));
+                                const dBytes = Uint8Array.from(atob(dJson.content), c => c.charCodeAt(0));
+                                parseOk = parseBuffers(sBytes.buffer, dBytes.buffer);
+                            } catch(b64Err) { console.warn('base64 解码失败:', b64Err); }
+                            // 方式B：raw.githubusercontent.com 直接下载
+                            if (!parseOk) {
+                                try {
+                                    const [owner, repoName] = ghConfig.repo.split('/');
+                                    const rawUrl = 'https://raw.githubusercontent.com/' + ghConfig.repo + '/' + branch + '/';
+                                    const [rawSumRes, rawDiffRes] = await Promise.all([
+                                        fetch(rawUrl + encodeURIComponent('月汇总表.xlsx')),
+                                        fetch(rawUrl + encodeURIComponent('月差异明细表.xlsx'))
+                                    ]);
+                                    if (rawSumRes.ok && rawDiffRes.ok) {
+                                        parseOk = parseBuffers(await rawSumRes.arrayBuffer(), await rawDiffRes.arrayBuffer());
+                                    }
+                                } catch(rawErr) { console.warn('raw URL 下载失败:', rawErr); }
+                            }
+                            if (parseOk) {
+                                try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
+                                debouncedFullRefresh();
+                                showToast('✅ 已从 GitHub 更新最新数据', false);
+                                loaded = true;
+                            }
                         } else {
                             console.warn('GitHub 拉取失败: HTTP ' + summaryRes.status + ' / ' + diffRes.status);
                             if (!loaded) showToast('⚠️ GitHub 拉取失败 (HTTP ' + summaryRes.status + ')，尝试其他方式...', true);
@@ -3323,11 +3344,12 @@
                         if (summaryRes.ok && diffRes.ok) {
                             const summaryBuffer = await summaryRes.arrayBuffer();
                             const diffBuffer = await diffRes.arrayBuffer();
-                            parseBuffers(summaryBuffer, diffBuffer);
-                            try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
-                            debouncedFullRefresh();
-                            showToast('✅ 本地数据拉取解析完毕！');
-                            loaded = true;
+                            if (parseBuffers(summaryBuffer, diffBuffer)) {
+                                try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
+                                debouncedFullRefresh();
+                                showToast('✅ 本地数据拉取解析完毕！');
+                                loaded = true;
+                            }
                         }
                     } catch(localErr) { console.warn('本地文件加载失败:', localErr); }
                 }
