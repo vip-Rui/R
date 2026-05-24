@@ -3255,11 +3255,33 @@
                 }
             }
 
-            async function fetchRemoteData() {
+            async function fetchRemoteData(skipCache = false) {
                 showLoading();
                 let loaded = false;
-                try {
-                    // 优先级1：从 GitHub API 拉取最新数据
+
+                // 如果不跳过缓存，优先从 localStorage 加载
+                if (!skipCache) {
+                    const cachedSummary = localStorage.getItem('board_summary_data');
+                    const cachedDiff = localStorage.getItem('board_diff_data');
+                    if (cachedSummary && cachedDiff) {
+                        try {
+                            rawSummaryData = JSON.parse(cachedSummary);
+                            rawDiffData = JSON.parse(cachedDiff);
+                            const parsedSum = [], parsedDiff = [];
+                            rawSummaryData.forEach(r => { const p = parseSummaryRow(r); if(p && p.totalChecks > 0) parsedSum.push(p); });
+                            rawDiffData.forEach(r => { const p = parseDiffRow(r); if(p) parsedDiff.push(p); });
+                            if (parsedSum.length && parsedDiff.length) {
+                                processParsedData(parsedSum, parsedDiff);
+                                debouncedFullRefresh();
+                                showToast('✅ 已加载本地缓存数据', false);
+                                loaded = true;
+                            }
+                        } catch(e) { console.warn('localStorage 数据解析失败:', e); }
+                    }
+                }
+
+                // 尝试从 GitHub API 拉取（仅当 skipCache=true 或缓存为空时）
+                if (!loaded) {
                     const ghConfig = JSON.parse(localStorage.getItem('gh_config') || '{}');
                     if (ghConfig.token && ghConfig.repo) {
                         try {
@@ -3276,63 +3298,41 @@
                             if (summaryRes.ok && diffRes.ok) {
                                 const sJson = await summaryRes.json();
                                 const dJson = await diffRes.json();
-                                const summaryBuffer = Uint8Array.from(atob(sJson.content), c => c.charCodeAt(0)).buffer;
-                                const diffBuffer = Uint8Array.from(atob(dJson.content), c => c.charCodeAt(0)).buffer;
-                                parseBuffers(summaryBuffer, diffBuffer);
+                                // 正确解码 base64 二进制数据
+                                const sBytes = Uint8Array.from(atob(sJson.content), c => c.charCodeAt(0));
+                                const dBytes = Uint8Array.from(atob(dJson.content), c => c.charCodeAt(0));
+                                parseBuffers(sBytes.buffer, dBytes.buffer);
                                 try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
                                 debouncedFullRefresh();
                                 showToast('✅ 已从 GitHub 拉取最新数据', false);
                                 loaded = true;
                             } else {
-                                console.warn('GitHub 拉取失败: 汇总表 HTTP' + summaryRes.status + ' 差异表 HTTP' + diffRes.status);
+                                console.warn('GitHub 拉取失败: HTTP ' + summaryRes.status + ' / ' + diffRes.status);
                             }
                         } catch(ghErr) { console.warn('GitHub 拉取异常:', ghErr); }
                     }
-
-                    // 优先级2：从 localStorage 加载缓存数据
-                    if (!loaded) {
-                        const cachedSummary = localStorage.getItem('board_summary_data');
-                        const cachedDiff = localStorage.getItem('board_diff_data');
-                        if (cachedSummary && cachedDiff) {
-                            try {
-                                rawSummaryData = JSON.parse(cachedSummary);
-                                rawDiffData = JSON.parse(cachedDiff);
-                                const parsedSum = [], parsedDiff = [];
-                                rawSummaryData.forEach(r => { const p = parseSummaryRow(r); if(p && p.totalChecks > 0) parsedSum.push(p); });
-                                rawDiffData.forEach(r => { const p = parseDiffRow(r); if(p) parsedDiff.push(p); });
-                                if (parsedSum.length && parsedDiff.length) {
-                                    processParsedData(parsedSum, parsedDiff);
-                                    debouncedFullRefresh();
-                                    showToast('✅ 已加载本地缓存数据', false);
-                                    loaded = true;
-                                }
-                            } catch(e) { console.warn('localStorage 数据解析失败:', e); }
-                        }
-                    }
-
-                    // 优先级3：尝试本地文件
-                    if (!loaded) {
-                        try {
-                            showToast('正在从本地拉取最新数据中...', false);
-                            const [summaryRes, diffRes] = await Promise.all([
-                                fetch('./月汇总表.xlsx'),
-                                fetch('./月差异明细表.xlsx')
-                            ]);
-                            if (summaryRes.ok && diffRes.ok) {
-                                const summaryBuffer = await summaryRes.arrayBuffer();
-                                const diffBuffer = await diffRes.arrayBuffer();
-                                parseBuffers(summaryBuffer, diffBuffer);
-                                try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
-                                debouncedFullRefresh();
-                                showToast('✅ 本地数据拉取解析完毕！');
-                                loaded = true;
-                            }
-                        } catch(localErr) { console.warn('本地文件加载失败:', localErr); }
-                    }
-                } catch (e) {
-                    console.error("网络请求异常:", e);
                 }
-                
+
+                // 尝试本地文件
+                if (!loaded) {
+                    try {
+                        showToast('正在从本地拉取最新数据中...', false);
+                        const [summaryRes, diffRes] = await Promise.all([
+                            fetch('./月汇总表.xlsx'),
+                            fetch('./月差异明细表.xlsx')
+                        ]);
+                        if (summaryRes.ok && diffRes.ok) {
+                            const summaryBuffer = await summaryRes.arrayBuffer();
+                            const diffBuffer = await diffRes.arrayBuffer();
+                            parseBuffers(summaryBuffer, diffBuffer);
+                            try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
+                            debouncedFullRefresh();
+                            showToast('✅ 本地数据拉取解析完毕！');
+                            loaded = true;
+                        }
+                    } catch(localErr) { console.warn('本地文件加载失败:', localErr); }
+                }
+
                 // 兜底：演示数据
                 if (!loaded) {
                     showToast('⚠️ 未能在根目录找到数据表或网络受阻，自动装载【本地演示数据】。', true);
@@ -3393,6 +3393,7 @@
                                 rawSummaryData = sRaw;
                                 rawDiffData = dRaw;
                                 processParsedData(summaryRows, diffRows);
+                                try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
                                 combinedFileInput.value = '';
                                 showToast('🎉 本地数据处理完成，已为您开启「在线管理」。');
                                 hideLoading();
@@ -3418,7 +3419,7 @@
             if (refreshRemoteBtn) {
                 refreshRemoteBtn.addEventListener('click', () => {
                     if (sessionStorage.getItem('board_authenticated') === 'true') {
-                        fetchRemoteData();
+                        fetchRemoteData(true);
                     }
                 });
             }
