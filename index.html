@@ -1225,6 +1225,21 @@
                     </table>
                 </div>
                 
+                <!-- 同步历史记录面板 -->
+                <div id="syncLogPanel" class="mt-4 shrink-0 bg-[var(--card-base)] backdrop-blur-xl border border-[var(--border-glow)] rounded-2xl overflow-hidden shadow-sm">
+                    <div id="syncLogHeader" class="flex items-center justify-between px-5 py-3 cursor-pointer hover:bg-[var(--table-header-bg)] transition-colors select-none">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-4 h-4 text-[var(--text-secondary)] transition-transform" id="syncLogChevron" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                            <span class="font-bold text-xs text-[var(--text-primary)]">📋 同步历史记录</span>
+                            <span id="syncLogBadge" class="text-[10px] bg-gray-100 dark:bg-gray-800 text-[var(--text-secondary)] px-2 py-0.5 rounded-full hidden">0</span>
+                        </div>
+                        <button id="clearSyncLogBtn" class="text-[10px] text-red-400 hover:text-red-600 dark:text-red-500 dark:hover:text-red-400 px-2 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors hidden">清空记录</button>
+                    </div>
+                    <div id="syncLogBody" class="hidden border-t border-[var(--border-glow)] max-h-64 overflow-y-auto">
+                        <div id="syncLogList" class="divide-y divide-[var(--border-glow)]"></div>
+                    </div>
+                </div>
+
                 <div class="text-[11px] text-[var(--text-secondary)] mt-4 shrink-0 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-[var(--kpi-bg)] p-3 rounded-xl border border-[var(--border-glow)]">
                     <div class="flex items-center gap-2">
                         <span class="text-xl">💡</span> 
@@ -3790,87 +3805,159 @@
                 reader.readAsArrayBuffer(file);
             });
 
-            // ★ 核心功能：一键生成 Excel 并调用 GitHub API Push ★
+            // ───── 同步历史记录系统 ─────
+            function getSyncLog() {
+                try { return JSON.parse(localStorage.getItem('sync_log') || '[]'); } catch(e) { return []; }
+            }
+            function saveSyncLog(log) {
+                if (log.length > 100) log = log.slice(-100);
+                localStorage.setItem('sync_log', JSON.stringify(log));
+            }
+            function addSyncLogEntry(filesStatus) {
+                const log = getSyncLog();
+                const entry = {
+                    timestamp: new Date().toISOString(),
+                    files: filesStatus,
+                    overall: filesStatus.every(f => f.status === 'ok') ? 'success' : 'partial'
+                };
+                log.push(entry);
+                saveSyncLog(log);
+                renderSyncLog();
+            }
+            function renderSyncLog() {
+                const log = getSyncLog();
+                const badge = document.getElementById('syncLogBadge');
+                const clearBtn = document.getElementById('clearSyncLogBtn');
+                const listEl = document.getElementById('syncLogList');
+                if (log.length === 0) {
+                    badge.classList.add('hidden');
+                    clearBtn.classList.add('hidden');
+                    listEl.innerHTML = '<div class="px-4 py-6 text-center text-[11px] text-[var(--text-secondary)]">暂无同步记录</div>';
+                    return;
+                }
+                badge.classList.remove('hidden');
+                badge.textContent = log.length;
+                clearBtn.classList.remove('hidden');
+                let html = '';
+                [...log].reverse().forEach(entry => {
+                    const dt = new Date(entry.timestamp);
+                    const timeStr = dt.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+                    const sIcon = entry.overall === 'success' ? '\u2705' : '\u26a0\ufe0f';
+                    html += '<div class="px-4 py-2.5 hover:bg-[var(--table-hover)] transition-colors">';
+                    html += '<div class="flex items-center justify-between mb-1">';
+                    html += '<span class="text-[10px] text-[var(--text-secondary)] font-mono">' + timeStr + '</span>';
+                    html += '<span class="text-[10px] font-bold ' + (entry.overall === 'success' ? 'text-emerald-600' : 'text-amber-600') + '">' + sIcon + ' ' + (entry.overall === 'success' ? '全部成功' : '部分失败') + '</span></div>';
+                    entry.files.forEach(f => {
+                        const fIcon = f.status === 'ok' ? '\u2705' : '\u274c';
+                        const fColor = f.status === 'ok' ? 'text-emerald-600' : 'text-red-500';
+                        html += '<div class="flex items-center gap-2 text-[11px] ' + fColor + ' ml-2"><span>' + fIcon + ' ' + f.name + '</span>';
+                        if (f.message) html += '<span class="text-[10px] opacity-70 truncate max-w-[200px]" title="' + f.message.replace(/"/g, '&quot;') + '">' + f.message + '</span>';
+                        html += '</div>';
+                    });
+                    html += '</div>';
+                });
+                listEl.innerHTML = html;
+            }
+            (function initSyncLogPanel() {
+                const header = document.getElementById('syncLogHeader');
+                const body = document.getElementById('syncLogBody');
+                const chevron = document.getElementById('syncLogChevron');
+                header.addEventListener('click', () => {
+                    if (body.classList.contains('hidden')) {
+                        body.classList.remove('hidden');
+                        chevron.style.transform = 'rotate(180deg)';
+                    } else {
+                        body.classList.add('hidden');
+                        chevron.style.transform = 'rotate(0deg)';
+                    }
+                });
+                document.getElementById('clearSyncLogBtn').addEventListener('click', e => {
+                    e.stopPropagation();
+                    if (confirm('确定要清空所有同步历史记录吗？')) {
+                        localStorage.removeItem('sync_log');
+                        renderSyncLog();
+                        showToast('🗑️ 同步历史已清空');
+                    }
+                });
+                renderSyncLog();
+            })();
+            // ───── 同步历史记录系统 END ─────
+
+            // ★ 核心功能：一键生成 Excel 并调用 GitHub API Push（同时推送两个文件） ★
             document.getElementById('syncGhBtn').addEventListener('click', async () => {
                 const ghConfig = JSON.parse(localStorage.getItem('gh_config') || '{}');
                 if (!ghConfig.token || !ghConfig.repo) {
                     document.getElementById('ghAuthModal').classList.add('visible');
                     return;
                 }
-
-                // 1. 将界面上当前页的修改保存到数组
                 extractGridDataToMemory();
-
                 showLoading();
-                showToast('正在为您打包并生成 Excel 加密文件...', false);
-
+                showToast('🔍 正在验证仓库连接...', false);
                 try {
-                    // 乐观更新：立刻在前端内存中应用修改并刷新主看板（免得等网络）
+                    const branch = ghConfig.branch || 'main';
+                    const repoCheckRes = await fetch('https://api.github.com/repos/' + ghConfig.repo, {
+                        headers: { 'Authorization': 'token ' + ghConfig.token }
+                    });
+                    if (!repoCheckRes.ok) {
+                        if (repoCheckRes.status === 404) throw new Error('仓库 "' + ghConfig.repo + '" 不存在或无访问权限，请检查密钥配置中的仓库路径');
+                        if (repoCheckRes.status === 401) throw new Error('Token 无效或已过期，请重新生成 PAT 并更新密钥配置');
+                        throw new Error('仓库验证失败 (HTTP ' + repoCheckRes.status + ')，请确认 Token 和仓库路径正确');
+                    }
+                    const branchCheckRes = await fetch('https://api.github.com/repos/' + ghConfig.repo + '/branches/' + encodeURIComponent(branch), {
+                        headers: { 'Authorization': 'token ' + ghConfig.token }
+                    });
+                    if (!branchCheckRes.ok) throw new Error('分支 "' + branch + '" 不存在于仓库 "' + ghConfig.repo + '"，请检查密钥配置中的分支名（通常为 main 或 master）');
                     const parsedSum = [], parsedDiff = [];
                     rawSummaryData.forEach(r => { const p = parseSummaryRow(r); if(p && p.totalChecks > 0) parsedSum.push(p); });
                     rawDiffData.forEach(r => { const p = parseDiffRow(r); if(p) parsedDiff.push(p); });
                     processParsedData(parsedSum, parsedDiff);
-
-                    // 2. 利用 SheetJS 将数组编译为真正的 Excel 文件 (Base64形态供API调用)
-                    const newData = currentManageGridType === 'diff' ? rawDiffData : rawSummaryData;
-                    // 清理我们自己加的内置字段例如 _origIndex
-                    const cleanData = newData.map(row => {
-                        const newRow = {...row};
-                        delete newRow._origIndex;
-                        return newRow;
-                    });
-                    
-                    const wb = XLSX.utils.book_new();
-                    const ws = XLSX.utils.json_to_sheet(cleanData);
-                    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
-                    const base64Content = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-
-                    const fileName = currentManageGridType === 'diff' ? '月差异明细表.xlsx' : '月汇总表.xlsx';
-                    const apiUrl = `https://api.github.com/repos/${ghConfig.repo}/contents/${encodeURIComponent(fileName)}`;
-                    
-                    // 3. GitHub API 必须要求当前文件的 SHA
-                    showToast('正在与 GitHub 建立安全握手校验...', false);
-                    let sha = '';
-                    const getRes = await fetch(`${apiUrl}?ref=${ghConfig.branch || 'main'}`, {
-                        headers: { 'Authorization': `token ${ghConfig.token}` }
-                    });
-                    if (getRes.ok) {
-                        const getJson = await getRes.json();
-                        sha = getJson.sha;
+                    const filesToSync = [
+                        { dataArray: rawDiffData, fileName: '月差异明细表.xlsx', label: '差异明细表' },
+                        { dataArray: rawSummaryData, fileName: '月汇总表.xlsx', label: '汇总表' }
+                    ];
+                    const filesStatus = [];
+                    let totalSuccess = 0;
+                    for (const file of filesToSync) {
+                        try {
+                            showToast('📦 正在打包「' + file.label + '」...', false);
+                            const cleanData = file.dataArray.map(row => { const r = {...row}; delete r._origIndex; return r; });
+                            const wb = XLSX.utils.book_new();
+                            XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cleanData), 'Sheet1');
+                            const base64Content = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+                            const apiUrl = 'https://api.github.com/repos/' + ghConfig.repo + '/contents/' + encodeURIComponent(file.fileName);
+                            let sha = '';
+                            const getRes = await fetch(apiUrl + '?ref=' + branch, {
+                                headers: { 'Authorization': 'token ' + ghConfig.token }
+                            });
+                            if (getRes.ok) { const j = await getRes.json(); sha = j.sha; }
+                            else if (getRes.status !== 404) { const j = await getRes.json().catch(() => ({})); throw new Error(j.message || '获取文件信息失败 (HTTP ' + getRes.status + ')'); }
+                            showToast('🚀 正在推送「' + file.label + '」到云端...', false);
+                            const putBody = { message: '🔧 在线看板自动同步：更新了 [' + file.fileName + ']', content: base64Content, branch: branch };
+                            if (sha) putBody.sha = sha;
+                            const putRes = await fetch(apiUrl, {
+                                method: 'PUT',
+                                headers: { 'Authorization': 'token ' + ghConfig.token, 'Content-Type': 'application/json' },
+                                body: JSON.stringify(putBody)
+                            });
+                            if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error(err.message || '推送失败 (HTTP ' + putRes.status + ')'); }
+                            filesStatus.push({ name: file.fileName, status: 'ok', message: '推送成功' });
+                            totalSuccess++;
+                        } catch (fileErr) {
+                            filesStatus.push({ name: file.fileName, status: 'fail', message: fileErr.message });
+                        }
                     }
-
-                    // 4. PUT 推送覆盖
-                    showToast('正在向云端提交通知更新...', false);
-                    const putRes = await fetch(apiUrl, {
-                        method: 'PUT',
-                        headers: {
-                            'Authorization': `token ${ghConfig.token}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            message: `🔧 在线看板自动同步：更新了 [${fileName}]`,
-                            content: base64Content,
-                            sha: sha || undefined,
-                            branch: ghConfig.branch || 'main'
-                        })
-                    });
-
-                    if (!putRes.ok) {
-                        const err = await putRes.json();
-                        throw new Error(err.message || 'Push 失败，请检查密钥权限');
-                    }
-
-                    showToast('✅ 云端同步成功！3秒后系统热重启最新图表...', false);
-                    setTimeout(() => { fetchRemoteData(); }, 3000);
+                    addSyncLogEntry(filesStatus);
+                    if (totalSuccess === filesToSync.length) showToast('✅ 两个文件云端同步全部成功！3秒后热重启最新图表...', false);
+                    else if (totalSuccess > 0) showToast('⚠️ 部分成功：' + totalSuccess + '/' + filesToSync.length + ' 个文件已同步，请查看历史记录了解详情', true);
+                    else showToast('❌ 同步全部失败，请检查密钥配置和网络连接', true);
+                    if (totalSuccess > 0) setTimeout(() => { fetchRemoteData(); }, 3000);
                 } catch (e) {
                     console.error(e);
                     showToast('同步失败: ' + e.message, true);
                 } finally {
                     hideLoading();
                 }
-            });
-
-            document.getElementById('saveGhBtn').addEventListener('click', () => {
+            });document.getElementById('saveGhBtn').addEventListener('click', () => {
                 const repo = document.getElementById('ghRepo').value.trim();
                 const branch = document.getElementById('ghBranch').value.trim() || 'main';
                 const token = document.getElementById('ghToken').value.trim();
