@@ -3281,6 +3281,7 @@
 
                 // 优先级2：GitHub API 拉取最新数据（后台更新）
                 const ghConfig = JSON.parse(localStorage.getItem('gh_config') || '{}');
+                let githubSkipped = false;
                 if (ghConfig.token && ghConfig.repo) {
                     try {
                         showToast('正在检查 GitHub 最新数据...', false);
@@ -3335,6 +3336,9 @@
 
                 // 优先级3：尝试本地文件
                 if (!loaded) {
+                    if (!ghConfig.token || !ghConfig.repo) {
+                        showToast('💡 GitHub 未配置，请在「在线数据管理」中设置仓库信息', true);
+                    }
                     try {
                         showToast('正在从本地拉取最新数据中...', false);
                         const [summaryRes, diffRes] = await Promise.all([
@@ -3347,7 +3351,7 @@
                             if (parseBuffers(summaryBuffer, diffBuffer)) {
                                 try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
                                 debouncedFullRefresh();
-                                showToast('✅ 本地数据拉取解析完毕！');
+                                showToast('✅ 本地文件加载成功（如需从 GitHub 拉取，请先配置仓库连接）');
                                 loaded = true;
                             }
                         }
