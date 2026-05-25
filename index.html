@@ -1111,11 +1111,13 @@
                     </div>
                     <div class="segmented-control" id="trendTimeScopeSwitch">
                         <button class="segment-btn active" data-scope="daily">📈 日度趋势</button>
-                        <button class="segment-btn" data-scope="weekly">⚖️ 周度环比</button>
-                        <button class="segment-btn" data-scope="monthly">📊 月度环比</button>
+                        <button class="segment-btn" data-scope="weekly">⚖️ 近4周趋势</button>
+                        <button class="segment-btn" data-scope="monthly">📊 近6月趋势</button>
                     </div>
                 </div>
                 <div id="trendChart" class="trend-chart-box"></div>
+                <!-- 新增：仅在周度对比时展示的数据表格容器 -->
+                <div id="trendWeeklyTable" class="w-full mt-2 hidden"></div>
             </div>
 
             <div class="ios-card">
@@ -1441,19 +1443,6 @@
                     let prev = new Date(baseDate);
                     prev.setDate(prev.getDate() - 1);
                     prevDates.push(prev.toISOString().split('T')[0]);
-                } else if (scope === 'weekly') {
-                    let day = baseDate.getDay();
-                    let diff = baseDate.getDate() - day + (day === 0 ? -6 : 1);
-                    let monday = new Date(new Date(baseDate).setDate(diff));
-                    for(let i=0; i<7; i++) {
-                        let d = new Date(monday); d.setDate(monday.getDate() + i);
-                        currentDates.push(d.toISOString().split('T')[0]);
-                    }
-                    let prevMonday = new Date(monday); prevMonday.setDate(monday.getDate() - 7);
-                    for(let i=0; i<7; i++) {
-                        let d = new Date(prevMonday); d.setDate(prevMonday.getDate() + i);
-                        prevDates.push(d.toISOString().split('T')[0]);
-                    }
                 } else if (scope === 'monthly') {
                     let y = baseDate.getFullYear(), m = baseDate.getMonth();
                     let lastDay = new Date(y, m + 1, 0).getDate();
@@ -1468,6 +1457,75 @@
                     }
                 }
                 return { currentDates, prevDates };
+            }
+
+            // --- 新增：获取近N周的日期范围 ---
+            function getPastNWeeks(baseDateStr, n = 4) {
+                let baseDate = new Date(baseDateStr);
+                let day = baseDate.getDay();
+                let diff = baseDate.getDate() - day + (day === 0 ? -6 : 1); 
+                let currentMonday = new Date(new Date(baseDate).setDate(diff));
+
+                let weeks = [];
+                for (let i = n - 1; i >= 0; i--) {
+                    let start = new Date(currentMonday);
+                    start.setDate(start.getDate() - i * 7);
+                    let end = new Date(start);
+                    end.setDate(end.getDate() + 6);
+
+                    let startStr = start.toISOString().split('T')[0];
+                    let endStr = end.toISOString().split('T')[0];
+                    let label = `${start.getMonth() + 1}.${start.getDate()}-${end.getMonth() + 1}.${end.getDate()}`;
+                    weeks.push({ startStr, endStr, label });
+                }
+                return weeks;
+            }
+
+            // --- 新增：获取近N月的日期范围 ---
+            function getPastNMonths(baseDateStr, n = 6) {
+                let baseDate = new Date(baseDateStr);
+                let months = [];
+                for (let i = n - 1; i >= 0; i--) {
+                    let d = new Date(baseDate.getFullYear(), baseDate.getMonth() - i, 1);
+                    let year = d.getFullYear();
+                    let month = d.getMonth() + 1;
+                    let startStr = `${year}-${month.toString().padStart(2, '0')}-01`;
+                    let lastDay = new Date(year, month, 0).getDate();
+                    let endStr = `${year}-${month.toString().padStart(2, '0')}-${lastDay.toString().padStart(2, '0')}`;
+                    let label = `${year.toString().slice(-2)}年${month}月`;
+                    months.push({ startStr, endStr, label });
+                }
+                return months;
+            }
+
+            // --- 新增：按日期区间统计客观执行差异率 ---
+            function getAggregatedDataForPeriod(startDateStr, endDateStr, targetWarehouses) {
+                let checks = 0;
+                let errorsSet = new Set();
+                const checkWarehouses = targetWarehouses.length > 0 && !targetWarehouses.includes('__ALL__');
+
+                for(let i=0; i < summaryData.length; i++) {
+                    const s = summaryData[i];
+                    if(s.dateOnly >= startDateStr && s.dateOnly <= endDateStr) {
+                        if(!checkWarehouses || targetWarehouses.includes(s.siteName)) {
+                            checks += (s.totalChecks || 0);
+                        }
+                    }
+                }
+
+                for(let i=0; i < diffData.length; i++) {
+                    const d = diffData[i];
+                    if(d.dateOnly >= startDateStr && d.dateOnly <= endDateStr && d.isObj && d.isExec && d.code) {
+                        if(!checkWarehouses || targetWarehouses.includes(d.warehouse)) {
+                            errorsSet.add(d.code);
+                        }
+                    }
+                }
+
+                let errors = errorsSet.size;
+                let rate = checks > 0 ? parseFloat((errors / checks * 100).toFixed(2)) : null;
+
+                return { checks, errors, rate };
             }
 
             const warehouseGroupEl = document.createElement('div');
@@ -1907,13 +1965,60 @@
                 
                 return { checks, errors, rate };
             }
+
+            // 新增：提取连续周期的数据聚合
+            function getAggregatedDataForPeriodsList(periods, targetWarehouses) {
+                return periods.map(p => getAggregatedDataForPeriod(p.startStr, p.endStr, targetWarehouses).rate);
+            }
+
+            // 新增：未筛选时专门为【大仓】与【中心仓】分开统计的计算引擎
+            function getSplitAggregatedDataForPeriodsList(periods) {
+                let bigRates = [];
+                let centerRates = [];
+                
+                periods.forEach(p => {
+                    let bigChecks = 0; let bigErrors = new Set();
+                    let centerChecks = 0; let centerErrors = new Set();
+                    
+                    for(let i=0; i < summaryData.length; i++) {
+                        const s = summaryData[i];
+                        if(s.dateOnly >= p.startStr && s.dateOnly <= p.endStr) {
+                            let isBig = s.siteName.includes("智能验机") || s.siteName.includes("后验");
+                            if (isBig) bigChecks += (s.totalChecks || 0);
+                            else centerChecks += (s.totalChecks || 0);
+                        }
+                    }
+
+                    for(let i=0; i < diffData.length; i++) {
+                        const d = diffData[i];
+                        if(d.dateOnly >= p.startStr && d.dateOnly <= p.endStr && d.isObj && d.isExec && d.code && d.warehouse) {
+                            let isBig = d.warehouse.includes("智能验机") || d.warehouse.includes("后验");
+                            if (isBig) bigErrors.add(d.code);
+                            else centerErrors.add(d.code);
+                        }
+                    }
+                    
+                    bigRates.push(bigChecks > 0 ? parseFloat((bigErrors.size / bigChecks * 100).toFixed(2)) : null);
+                    centerRates.push(centerChecks > 0 ? parseFloat((centerErrors.size / centerChecks * 100).toFixed(2)) : null);
+                });
+                
+                return { bigRates, centerRates };
+            }
             
             function renderTrendChart() {
                 if(!trendChart) trendChart = echarts.init(document.getElementById('trendChart'));
+                trendChart.clear(); // 切换维度时深度清理之前的图表缓存
                 
                 const textColor = getChartTextColor(), axisLineColor = getAxisLineColor();
                 const activeWarehouses = selectedWarehouses.filter(x => x !== '__ALL__');
                 let option = {};
+                
+                const trendTableContainer = document.getElementById('trendWeeklyTable');
+                if (currentTrendScope === 'daily') {
+                    trendTableContainer.classList.add('hidden');
+                } else {
+                    trendTableContainer.classList.remove('hidden');
+                }
 
                 function getMarkPointData(rates, lineColor) {
                     if (!rates.length) return [];
@@ -1966,15 +2071,23 @@
                     return res;
                 }
 
-                const createSeries = (name, data, color, isDashed = false) => ({
+                const createSeries = (name, data, color, isDashed = false, showLabel = false) => ({
                     name: name,
                     type: 'line',
                     smooth: 0.45, 
-                    showSymbol: false, 
+                    showSymbol: showLabel,
                     symbol: 'circle',
                     symbolSize: 8,
                     data: data,
                     connectNulls: true,
+                    label: {
+                        show: showLabel,
+                        position: 'top',
+                        formatter: '{c}%',
+                        color: color,
+                        fontWeight: 'bold',
+                        fontSize: 12
+                    },
                     lineStyle: { 
                         width: 2.5, 
                         color: color,
@@ -1985,7 +2098,7 @@
                         shadowOffsetY: isDashed ? 0 : 4
                     },
                     itemStyle: { color: color, borderColor: '#ffffff', borderWidth: 2, opacity: isDashed ? 0.6 : 1 },
-                    markPoint: {
+                    markPoint: showLabel ? null : {
                         data: getMarkPointData(data, color)
                     },
                     areaStyle: isDashed ? null : { 
@@ -1996,19 +2109,88 @@
                     }
                 });
 
+                // 通用 tooltip 渲染逻辑
+                const generalTooltip = { 
+                    trigger: 'axis',
+                    backgroundColor: 'rgba(255,255,255,0.96)',
+                    borderWidth: 0,
+                    textStyle: { color: '#1e293b', fontSize: 12, fontWeight: '500' },
+                    shadowColor: 'rgba(0,0,0,0.08)',
+                    shadowBlur: 20,
+                    shadowOffsetY: 8,
+                    extraCssText: 'border-radius: 12px; padding: 12px 16px;',
+                    axisPointer: { type: 'line', lineStyle: { color: 'rgba(0,0,0,0.1)', width: 1, type: 'dashed' } },
+                    formatter: function(params) {
+                        let html = `<div class="font-bold mb-1 border-b border-gray-100 pb-1">${params[0].axisValue} 客观执行差异率</div>`;
+                        params.forEach(p => {
+                            let val = p.value !== null && p.value !== undefined ? p.value + '%' : '无数据';
+                            html += `<div class="mt-1 flex items-center justify-between gap-4">
+                                        <span>${p.marker} <span class="font-semibold text-gray-700">${p.seriesName}</span></span>
+                                        <span class="font-black ${val === '无数据' ? 'text-gray-400 font-normal' : ''}" style="color:${val !== '无数据'? p.color : ''}">${val}</span>
+                                    </div>`;
+                        });
+                        return html;
+                    }
+                };
+
+                // 通用周度/月度动态渲染底部表格的方法
+                function renderTrendTable(periodsArray, tableData, huanbiTitle) {
+                    let thHtml = `<th class="text-left font-bold text-[var(--text-secondary)] p-3 border-b border-[var(--border-glow)]">数据对比维度</th>`;
+                    periodsArray.forEach(p => {
+                        thHtml += `<th class="text-center font-bold text-[var(--text-secondary)] p-3 border-b border-[var(--border-glow)]">${p.label}</th>`;
+                    });
+                    thHtml += `<th class="text-center font-bold text-[var(--text-secondary)] p-3 border-b border-[var(--border-glow)]">${huanbiTitle}</th>`;
+
+                    let trHtml = '';
+                    tableData.forEach(row => {
+                        let tdHtml = `<td class="p-3"><div class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full" style="background:${row.color}"></span><span class="font-bold text-[var(--text-primary)]">${row.name}</span></div></td>`;
+                        row.rates.forEach(r => {
+                            tdHtml += `<td class="text-center p-3 font-semibold text-[var(--text-primary)]">${r !== null ? r.toFixed(2) + '%' : '-'}</td>`;
+                        });
+                        
+                        let last = row.rates[row.rates.length - 1];
+                        let prev = row.rates[row.rates.length - 2];
+                        let huanbiHtml = '<span class="text-gray-400">-</span>';
+                        if (last !== null && prev !== null) {
+                            let diff = last - prev;
+                            if (diff > 0) {
+                                huanbiHtml = `<span class="text-red-500 font-bold">↑ ${diff.toFixed(2)}%</span>`;
+                            } else if (diff < 0) {
+                                huanbiHtml = `<span class="text-emerald-500 font-bold">↓ ${Math.abs(diff).toFixed(2)}%</span>`;
+                            } else {
+                                huanbiHtml = `<span class="text-gray-500 font-bold">-</span>`;
+                            }
+                        }
+                        tdHtml += `<td class="text-center p-3">${huanbiHtml}</td>`;
+                        trHtml += `<tr class="border-b border-[var(--border-glow)] hover:bg-[var(--table-hover)] transition-colors last:border-b-0">${tdHtml}</tr>`;
+                    });
+
+                    trendTableContainer.innerHTML = `
+                        <div class="overflow-x-auto bg-[var(--card-base)] border border-[var(--border-glow)] rounded-xl mt-4 shadow-sm backdrop-blur-md">
+                            <table class="w-full text-xs min-w-[600px] border-collapse">
+                                <thead class="bg-[var(--table-header-bg)]">
+                                    <tr>${thHtml}</tr>
+                                </thead>
+                                <tbody>
+                                    ${trHtml}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                }
+
                 let allDates = Array.from(new Set(summaryData.map(s => s.dateOnly).filter(Boolean))).sort();
                 let dataMaxDate = allDates.length ? allDates[allDates.length - 1] : new Date().toISOString().split('T')[0];
+                let baseDateStr = endDateFilter.value || dataMaxDate;
 
                 if (currentTrendScope === 'daily') {
+                    // --- 📉 日度趋势逻辑 ---
                     const sortedDates = allDates;
                     const seriesList = [];
                     document.getElementById('trendChartSubTitle').innerText = '';
 
                     if (activeWarehouses.length > 0) {
-                        const colorPalette = [
-                            '#0071e3', '#af52de', '#ff9500', '#34c759', 
-                            '#ff2d55', '#5ac8fa', '#5856d6', '#ffcc00'
-                        ];
+                        const colorPalette = ['#0071e3', '#af52de', '#ff9500', '#34c759', '#ff2d55', '#5ac8fa', '#5856d6', '#ffcc00'];
 
                         activeWarehouses.forEach((warehouseName, seriesIdx) => {
                             const checksMap = new Map();
@@ -2035,7 +2217,6 @@
                             const color = colorPalette[seriesIdx % colorPalette.length];
                             seriesList.push(createSeries(`${warehouseName} 客观执行差异率`, warehouseRates, color, false));
                         });
-
                     } else {
                         const bigSiteChecksMap = new Map(), bigSiteErrorsMap = new Map();
                         const centerSiteChecksMap = new Map(), centerSiteErrorsMap = new Map();
@@ -2081,17 +2262,7 @@
                         animation: isAnimationEnabled,
                         animationDuration: 1000,
                         backgroundColor: 'transparent',
-                        tooltip: { 
-                            trigger: 'axis',
-                            backgroundColor: 'rgba(255,255,255,0.96)',
-                            borderWidth: 0,
-                            textStyle: { color: '#1e293b', fontSize: 12, fontWeight: '500' },
-                            shadowColor: 'rgba(0,0,0,0.08)',
-                            shadowBlur: 20,
-                            shadowOffsetY: 8,
-                            extraCssText: 'border-radius: 12px; padding: 12px 16px;',
-                            axisPointer: { type: 'line', lineStyle: { color: 'rgba(0,0,0,0.1)', width: 1, type: 'dashed' } }
-                        },
+                        tooltip: generalTooltip,
                         legend: { data: seriesList.map(s => s.name), textStyle: { color: textColor, fontWeight: '600' }, top: 0, icon: 'circle', type: 'scroll' },
                         grid: { top: 60, bottom: 50, left: 50, right: 30 },
                         xAxis: { type: 'category', data: sortedDates, boundaryGap: false, axisLabel: { rotate: 20, color: textColor, fontWeight: '500' }, axisLine: { lineStyle: { color: axisLineColor } }, axisTick: { show: false } },
@@ -2119,115 +2290,73 @@
                         } 
                     });
 
-                } else {
-                    let baseDateStr = endDateFilter.value || dataMaxDate;
-                    const { currentDates, prevDates } = getComparisonPeriods(baseDateStr, currentTrendScope);
-                    
-                    let xAxisData = [];
-                    let currentName = '', prevName = '';
-
-                    if (currentTrendScope === 'weekly') {
-                        currentName = '本周'; prevName = '上周';
-                        xAxisData = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-                    } else if (currentTrendScope === 'monthly') {
-                        currentName = '本月'; prevName = '上月';
-                        for(let i=1; i<=Math.max(currentDates.length, prevDates.length); i++) xAxisData.push(i + '日');
-                    }
-
+                } else if (currentTrendScope === 'weekly' || currentTrendScope === 'monthly') {
+                    // --- 📉 连续周期（近4周 / 近6月）统一渲染架构 ---
+                    const isWeekly = currentTrendScope === 'weekly';
+                    const periods = isWeekly ? getPastNWeeks(baseDateStr, 4) : getPastNMonths(baseDateStr, 6); 
+                    let xAxisData = periods.map(p => p.label);
                     const seriesList = [];
-                    
+                    let tableData = []; 
+
                     if (activeWarehouses.length > 0) {
-                        document.getElementById('trendChartSubTitle').innerText = `基准点: ${baseDateStr}`;
+                        document.getElementById('trendChartSubTitle').innerText = `${isWeekly ? '近4周' : '近6月'}综合趋势 — 基准点: ${baseDateStr}`;
                         const colorPalette = ['#0071e3', '#af52de', '#ff9500', '#34c759', '#ff2d55', '#5ac8fa', '#5856d6', '#ffcc00'];
 
                         activeWarehouses.forEach((warehouseName, seriesIdx) => {
                             const color = colorPalette[seriesIdx % colorPalette.length];
-                            let currentRates = currentDates.map(dt => getAggregatedDataForDate(dt, [warehouseName]).rate);
-                            let prevRates = prevDates.map(dt => getAggregatedDataForDate(dt, [warehouseName]).rate);
-
-                            if (currentTrendScope === 'monthly') {
-                                let maxLen = xAxisData.length;
-                                while(currentRates.length < maxLen) currentRates.push(null);
-                                while(prevRates.length < maxLen) prevRates.push(null);
-                            }
-                            seriesList.push(createSeries(`${warehouseName} ${currentName}`, currentRates, color, false));
-                            seriesList.push(createSeries(`${warehouseName} ${prevName}`, prevRates, color, true));
+                            let rates = getAggregatedDataForPeriodsList(periods, [warehouseName]);
+                            seriesList.push(createSeries(`${warehouseName}`, rates, color, false, true));
+                            tableData.push({ name: warehouseName, rates: rates, color: color });
                         });
                     } else {
-                        document.getElementById('trendChartSubTitle').innerText = `[全国中心仓 (整体)] — 基准点: ${baseDateStr}`;
-                        let currentRates = currentDates.map(dt => getAggregatedDataForDate(dt, []).rate);
-                        let prevRates = prevDates.map(dt => getAggregatedDataForDate(dt, []).rate);
-
-                        if (currentTrendScope === 'monthly') {
-                            let maxLen = xAxisData.length;
-                            while(currentRates.length < maxLen) currentRates.push(null);
-                            while(prevRates.length < maxLen) prevRates.push(null);
-                        }
-                        seriesList.push(createSeries(`整体 ${currentName}`, currentRates, '#0071e3', false));
-                        seriesList.push(createSeries(`整体 ${prevName}`, prevRates, '#af52de', true));
+                        document.getElementById('trendChartSubTitle').innerText = `[大盘架构概览] ${isWeekly ? '近4周' : '近6月'}综合趋势 — 基准点: ${baseDateStr}`;
+                        let splitRates = getSplitAggregatedDataForPeriodsList(periods);
+                        
+                        seriesList.push(createSeries(`大仓 客观执行差异率`, splitRates.bigRates, '#0071e3', false, true));
+                        seriesList.push(createSeries(`中心仓 客观执行差异率`, splitRates.centerRates, '#af52de', false, true));
+                        
+                        tableData.push({ name: '大仓', rates: splitRates.bigRates, color: '#0071e3' });
+                        tableData.push({ name: '中心仓', rates: splitRates.centerRates, color: '#af52de' });
                     }
 
                     option = {
                         animation: isAnimationEnabled,
                         animationDuration: 1000,
                         backgroundColor: 'transparent',
-                        tooltip: { 
-                            trigger: 'axis',
-                            backgroundColor: 'rgba(255,255,255,0.96)',
-                            borderWidth: 0,
-                            textStyle: { color: '#1e293b', fontSize: 12, fontWeight: '500' },
-                            shadowColor: 'rgba(0,0,0,0.08)',
-                            shadowBlur: 20,
-                            shadowOffsetY: 8,
-                            extraCssText: 'border-radius: 12px; padding: 12px 16px;',
-                            axisPointer: { type: 'line', lineStyle: { color: 'rgba(0,0,0,0.1)', width: 1, type: 'dashed' } },
-                            formatter: function(params) {
-                                let html = `<div class="font-bold mb-1 border-b border-gray-100 pb-1">${params[0].axisValue} 对比数据</div>`;
-                                params.forEach(p => {
-                                    let isCurrent = p.seriesName.includes(currentName);
-                                    let realDate = isCurrent ? currentDates[p.dataIndex] : prevDates[p.dataIndex];
-                                    let val = p.value !== null && p.value !== undefined ? p.value + '%' : '无数据';
-                                    let dateHtml = realDate ? `<span class="text-[10px] text-gray-400 font-normal ml-1">(${realDate})</span>` : '';
-                                    html += `<div class="mt-1 flex items-center justify-between gap-4">
-                                                <span>${p.marker} <span class="font-semibold text-gray-700">${p.seriesName}</span>${dateHtml}</span>
-                                                <span class="font-black ${val === '无数据' ? 'text-gray-400 font-normal' : ''}" style="color:${val !== '无数据'? p.color : ''}">${val}</span>
-                                            </div>`;
-                                });
-                                return html;
-                            }
-                        },
+                        tooltip: generalTooltip,
                         legend: { data: seriesList.map(s => s.name), textStyle: { color: textColor, fontWeight: '600' }, top: 0, icon: 'circle', type: 'scroll' },
-                        grid: { top: 60, bottom: 50, left: 50, right: 30 },
-                        xAxis: { type: 'category', data: xAxisData, boundaryGap: false, axisLabel: { color: textColor, fontWeight: '500' }, axisLine: { lineStyle: { color: axisLineColor } }, axisTick: { show: false } },
+                        grid: { top: 50, bottom: 30, left: 50, right: 30 },
+                        xAxis: { type: 'category', data: xAxisData, boundaryGap: false, axisLabel: { color: textColor, fontWeight: 'bold' }, axisLine: { lineStyle: { color: axisLineColor } }, axisTick: { show: false } },
                         yAxis: { type: 'value', name: '客观执行差异率 (%)', nameTextStyle: { color: textColor, fontWeight: '500', padding: [0, 0, 10, 0] }, axisLabel: { color: textColor, formatter: '{value}%' }, splitLine: { lineStyle: { color: axisLineColor, type: 'dashed' } } },
                         series: seriesList
                     };
 
                     trendChart.setOption(option, true); 
+                    
+                    // 渲染对应维度的底部表格
+                    renderTrendTable(periods, tableData, isWeekly ? '环比 (上周对比)' : '环比 (上月对比)');
 
+                    // 点击下钻
                     trendChart.off('click');
                     trendChart.on('click', params => { 
                         if(params.componentType === 'series' && params.value !== null){ 
-                            let isCurrent = params.seriesName.includes(currentName);
-                            let realDate = isCurrent ? currentDates[params.dataIndex] : prevDates[params.dataIndex];
+                            const targetPeriod = periods[params.dataIndex];
                             
-                            let targetWarehouse = null;
-                            if (activeWarehouses.length > 0) {
-                                targetWarehouse = activeWarehouses.find(w => params.seriesName.startsWith(w));
-                            }
-                            
-                            if (realDate) {
+                            if (targetPeriod) {
                                 let filtered = currentFilteredDiff.filter(d => 
-                                    d.dateOnly === realDate && d.isObj && d.isExec && d.code
+                                    d.dateOnly >= targetPeriod.startStr && d.dateOnly <= targetPeriod.endStr && d.isObj && d.isExec && d.code
                                 );
                                 
-                                if (targetWarehouse) {
-                                    filtered = filtered.filter(d => d.warehouse === targetWarehouse);
-                                } else if (selectedWarehouses.length > 0 && !selectedWarehouses.includes('__ALL__')) {
-                                    filtered = filtered.filter(d => selectedWarehouses.includes(d.warehouse));
+                                if (activeWarehouses.length > 0) {
+                                    filtered = filtered.filter(d => d.warehouse === params.seriesName);
+                                } else {
+                                    if (params.seriesName.includes('大仓')) {
+                                        filtered = filtered.filter(d => d.warehouse.includes("智能验机") || d.warehouse.includes("后验"));
+                                    } else if (params.seriesName.includes('中心仓')) {
+                                        filtered = filtered.filter(d => !d.warehouse.includes("智能验机") && !d.warehouse.includes("后验"));
+                                    }
                                 }
-                                
-                                openDetailWithData(filtered, `📅 ${realDate} - 【${params.seriesName}】客观执行明细 (${filtered.length} 条)`); 
+                                openDetailWithData(filtered, `📅 ${targetPeriod.label} - ${params.seriesName}明细 (${filtered.length} 条)`); 
                             }
                         } 
                     });
@@ -2560,7 +2689,8 @@
                 let dataMaxDate = allDates.length ? allDates[allDates.length - 1] : new Date().toISOString().split('T')[0];
                 let baseDateStr = endDateFilter.value || dataMaxDate;
                 
-                const { currentDates, prevDates } = getComparisonPeriods(baseDateStr, currentTrendScope);
+                // 为了复用，这里使用月度对比的时间范围逻辑进行前后对比
+                const { currentDates, prevDates } = getComparisonPeriods(baseDateStr, 'monthly');
 
                 const modelMap = new Map();
                 const modelCurMap = new Map();
@@ -3964,249 +4094,245 @@
                             const wb = XLSX.utils.book_new();
                             XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cleanData), 'Sheet1');
                             const base64Content = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-                            const apiUrl = 'https://api.github.com/repos/' + ghConfig.repo + '/contents/' + encodeURIComponent(file.fileName);
-                            let sha = '';
+                            
+                            const ghConfigCurrent = JSON.parse(localStorage.getItem('gh_config') || '{}');
+                            const branch = ghConfigCurrent.branch || 'main';
+                            const apiUrl = 'https://api.github.com/repos/' + ghConfigCurrent.repo + '/contents/' + encodeURIComponent(file.fileName);
+                            
+                            // 先获取文件的 SHA 才能更新
+                            let fileSha = null;
                             try {
-                                const getRes = await fetch(apiUrl + '?ref=' + branch, {
-                                    headers: { 'Authorization': 'token ' + ghConfig.token }
+                                const fileInfoRes = await fetch(apiUrl + '?ref=' + branch, {
+                                    headers: { 'Authorization': 'token ' + ghConfigCurrent.token }
                                 });
-                                if (getRes.ok) { const j = await getRes.json(); sha = j.sha; }
-                            } catch(e) { console.warn('GET sha failed:', e.message); }
-                            showToast('🚀 正在推送「' + file.label + '」...', false);
-                            const putBody = { message: '🔧 在线看板自动同步：更新了 [' + file.fileName + ']', content: base64Content, branch: branch };
-                            if (sha) putBody.sha = sha;
-                            let putRes = await fetch(apiUrl, {
+                                if (fileInfoRes.ok) {
+                                    const fileInfo = await fileInfoRes.json();
+                                    fileSha = fileInfo.sha;
+                                }
+                            } catch(e) {}
+                            
+                            const bodyData = {
+                                message: `Auto-sync ${file.label} via Quality Board Data Manager`,
+                                content: base64Content,
+                                branch: branch
+                            };
+                            if (fileSha) bodyData.sha = fileSha;
+
+                            const pushRes = await fetch(apiUrl, {
                                 method: 'PUT',
-                                headers: { 'Authorization': 'token ' + ghConfig.token, 'Content-Type': 'application/json' },
-                                body: JSON.stringify(putBody)
+                                headers: {
+                                    'Authorization': 'token ' + ghConfigCurrent.token,
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify(bodyData)
                             });
-                            // 空仓库没有默认分支：去掉 branch 参数重试
-                            if (!putRes.ok && putRes.status === 404) {
-                                showToast('🔄 检测到空仓库，正在自动初始化...', false);
-                                const putBodyNoBranch = { message: putBody.message, content: putBody.content };
-                                if (sha) putBodyNoBranch.sha = sha;
-                                putRes = await fetch(apiUrl, {
-                                    method: 'PUT',
-                                    headers: { 'Authorization': 'token ' + ghConfig.token, 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(putBodyNoBranch)
-                                });
+
+                            if (pushRes.ok) {
+                                filesStatus.push({ name: file.fileName, status: 'ok' });
+                                totalSuccess++;
+                            } else {
+                                const errBody = await pushRes.json();
+                                filesStatus.push({ name: file.fileName, status: 'error', message: errBody.message || 'Push failed' });
                             }
-                            if (!putRes.ok) {
-                                let errMsg = '推送失败 HTTP ' + putRes.status;
-                                try { const j = await putRes.json(); errMsg = j.message || errMsg; } catch(e) {}
-                                throw new Error(errMsg);
-                            }
-                            filesStatus.push({ name: file.fileName, status: 'ok', message: '推送成功' });
-                            totalSuccess++;
                         } catch (fileErr) {
-                            console.error('File sync error:', file.fileName, fileErr.message);
-                            filesStatus.push({ name: file.fileName, status: 'fail', message: fileErr.message });
+                            filesStatus.push({ name: file.fileName, status: 'error', message: fileErr.message });
                         }
                     }
+
                     addSyncLogEntry(filesStatus);
+
                     if (totalSuccess === filesToSync.length) {
-                        showToast('✅ 两个文件云端同步全部成功！3秒后热重启...', false);
-                    } else if (totalSuccess > 0) {
-                        showToast('⚠️ 部分成功：' + totalSuccess + '/' + filesToSync.length + ' 个文件已同步', true);
-                    } else {
-                        const errDetails = filesStatus.map(f => f.name + ': ' + f.message).join(' | ');
-                        showToast('❌ 同步全部失败 | ' + errDetails, true);
-                    }
-                    if (totalSuccess > 0) { 
+                        showToast('✅ 所有数据已成功同步至 GitHub！');
                         try { localStorage.setItem('board_summary_data', JSON.stringify(rawSummaryData)); localStorage.setItem('board_diff_data', JSON.stringify(rawDiffData)); } catch(e) {}
-                        showToast('✅ 数据已缓存到本地，刷新页面也不会丢失', false);
-                        debouncedFullRefresh();
+                    } else if (totalSuccess > 0) {
+                        showToast(`⚠️ 部分文件同步成功 (${totalSuccess}/${filesToSync.length})，请检查同步记录`, true);
+                    } else {
+                        showToast('❌ 同步失败，请检查同步记录或 Token 权限', true);
                     }
-                } catch (e) {
-                    console.error(e);
-                    showToast('同步异常: ' + e.message, true);
+                } catch (err) {
+                    showToast('同步过程发生异常: ' + err.message, true);
+                    addSyncLogEntry([{ name: 'System', status: 'error', message: err.message }]);
                 } finally {
                     hideLoading();
                 }
-            });document.getElementById('saveGhBtn').addEventListener('click', () => {
-                const repo = document.getElementById('ghRepo').value.trim();
-                const branch = document.getElementById('ghBranch').value.trim() || 'main';
-                const token = document.getElementById('ghToken').value.trim();
-
-                if (!repo || !token) {
-                    showToast('必须提供 Repo 名称和 PAT 才能启用云端管理功能。', true);
-                    return;
-                }
-
-                localStorage.setItem('gh_config', JSON.stringify({ repo, branch, token }));
-                document.getElementById('ghAuthModal').classList.remove('visible');
-                showToast('✅ 密钥环境配置成功，您现在可以直接编辑数据并推送到云端了！');
-                
-                const activeNav = document.querySelector('.sidebar-item.active').dataset.nav;
-                if (activeNav === 'manage') {
-                    qualityView.classList.add('hidden');
-                    trendView.classList.add('hidden');
-                    manageView.classList.remove('hidden');
-                    renderEditGrid();
-                }
             });
 
-            document.getElementById('configGhBtn').addEventListener('click', () => {
-                const conf = JSON.parse(localStorage.getItem('gh_config') || '{}');
-                if (conf.repo) document.getElementById('ghRepo').value = conf.repo;
-                if (conf.branch) document.getElementById('ghBranch').value = conf.branch;
-                if (conf.token) document.getElementById('ghToken').value = conf.token;
-                document.getElementById('ghAuthModal').classList.add('visible');
-            });
-
-            document.querySelector('.close-gh-modal').addEventListener('click', () => {
-                document.getElementById('ghAuthModal').classList.remove('visible');
-            });
-            // ---------------------------------------------------------------------
-
-            const sidebarItems = document.querySelectorAll('.sidebar-item[data-nav]');
-            const settingsModal = document.getElementById('settingsModal');
-            
-            sidebarItems.forEach(item => {
+            // --- 侧边栏导航逻辑 ---
+            document.querySelectorAll('.sidebar-item[data-nav]').forEach(item => {
                 item.addEventListener('click', () => {
                     const nav = item.dataset.nav;
-                    if (nav === 'settings') {
-                        settingsModal.classList.add('visible'); 
+                    if(nav === 'settings') {
+                        document.getElementById('settingsModal').classList.add('visible');
+                        return;
+                    }
+
+                    document.querySelectorAll('.sidebar-item[data-nav]').forEach(b => b.classList.remove('active'));
+                    if(nav !== 'settings') item.classList.add('active');
+
+                    document.querySelectorAll('.view-panel').forEach(p => p.classList.add('hidden'));
+                    document.getElementById('filterBarPlaceholder').style.display = 'none';
+
+                    if (nav === 'quality') {
+                        document.getElementById('qualityView').classList.remove('hidden');
+                        document.getElementById('filterBarPlaceholder').style.display = 'flex';
+                        document.getElementById('mainBoardTitle').innerText = '质量数据看板 - 智能分析中心';
+                        debouncedFullRefresh();
+                    } else if (nav === 'trend') {
+                        document.getElementById('trendView').classList.remove('hidden');
+                        document.getElementById('filterBarPlaceholder').style.display = 'flex';
+                        document.getElementById('mainBoardTitle').innerText = '趋势分析看板 - 周期对比';
+                        debouncedFullRefresh();
                     } else if (nav === 'manage') {
-                        const ghConfig = JSON.parse(localStorage.getItem('gh_config') || '{}');
-                        if (!ghConfig.token || !ghConfig.repo) {
-                            document.getElementById('ghAuthModal').classList.add('visible');
-                            return; 
-                        }
-
-                        sidebarItems.forEach(i => i.classList.remove('active'));
-                        item.classList.add('active');
-
-                        qualityView.classList.add('hidden');
-                        trendView.classList.add('hidden');
-                        manageView.classList.remove('hidden');
-                        mainBoardTitle.innerText = "数据总控中心 - 编辑即所得";
-                        headerSubtitle.innerText = "CLOUD DATABASE CONSOLE";
-                        
-                        manageCurrentPage = 1;
-                        document.getElementById('manageSearchInput').value = '';
-                        renderEditGrid(); 
-                    } else {
-                        sidebarItems.forEach(i => i.classList.remove('active'));
-                        item.classList.add('active');
-                        
-                        manageView.classList.add('hidden');
-                        headerSubtitle.innerText = "INTELLIGENT DATA CENTER";
-
-                        if (nav === 'quality') {
-                            qualityView.classList.remove('hidden');
-                            trendView.classList.add('hidden');
-                            mainBoardTitle.innerText = "质量数据看板 - 智能分析中心";
-                            setTimeout(() => debouncedFullRefresh(), 100);
-                        } else if (nav === 'trend') {
-                            qualityView.classList.add('hidden');
-                            trendView.classList.remove('hidden');
-                            mainBoardTitle.innerText = "趋势分析看板 - 历史追溯中心";
-                            setTimeout(() => { if(trendChart) trendChart.resize(); }, 120);
-                        }
-                        
-                        window.scrollTo({top: 0, behavior: 'smooth'});
+                        document.getElementById('manageView').classList.remove('hidden');
+                        document.getElementById('mainBoardTitle').innerText = '在线数据管理 - 云端控制台';
+                        renderEditGrid();
                     }
                 });
             });
 
-            document.querySelector('.close-settings-modal').addEventListener('click', () => {
-                settingsModal.classList.remove('visible');
+            // --- GitHub 配置逻辑 ---
+            document.getElementById('configGhBtn')?.addEventListener('click', () => {
+                const cfg = JSON.parse(localStorage.getItem('gh_config') || '{}');
+                document.getElementById('ghRepo').value = cfg.repo || '';
+                document.getElementById('ghBranch').value = cfg.branch || 'main';
+                document.getElementById('ghToken').value = cfg.token || '';
+                document.getElementById('ghAuthModal').classList.add('visible');
             });
-            
-            const fontSizeSelect = document.getElementById('fontSizeSelect');
-            const cardRadiusSelect = document.getElementById('cardRadiusSelect');
-            const saveSettingsBtn = document.getElementById('saveSettingsBtn');
-            const resetSettingsBtn = document.getElementById('resetSettingsBtn');
 
-            const applyTheme = (theme) => {
-                let effective = theme;
-                if(theme === 'auto') effective = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-                document.body.setAttribute('data-theme', effective);
-                localStorage.setItem('theme', theme);
+            document.getElementById('saveGhBtn')?.addEventListener('click', async () => {
+                const repo = document.getElementById('ghRepo').value.trim();
+                const branch = document.getElementById('ghBranch').value.trim() || 'main';
+                const token = document.getElementById('ghToken').value.trim();
+                if(!repo || !token) { showToast('仓库地址和 Token 不能为空', true); return; }
                 
-                if(trendChart) { trendChart.dispose(); trendChart = null; renderTrendChart(); }
-                if(personStackChart) { personStackChart.dispose(); personStackChart = null; renderPersonStackChart(); }
-                if(issueTypeChart) { issueTypeChart.dispose(); issueTypeChart = null; renderIssueTypeChart(); }
-            };
+                showLoading();
+                try {
+                    const res = await fetch(`https://api.github.com/repos/${repo}`, {
+                        headers: { 'Authorization': `token ${token}` }
+                    });
+                    if(res.ok) {
+                        const repoData = await res.json();
+                        if(repoData.permissions && repoData.permissions.push) {
+                            localStorage.setItem('gh_config', JSON.stringify({repo, branch, token}));
+                            document.getElementById('ghAuthModal').classList.remove('visible');
+                            showToast('✅ GitHub 配置验证成功！');
+                        } else {
+                            showToast('⚠️ 该 Token 没有对仓库的写入权限', true);
+                        }
+                    } else {
+                        showToast('❌ 验证失败，仓库不存在或 Token 无效', true);
+                    }
+                } catch(e) {
+                    showToast('网络请求异常', true);
+                } finally {
+                    hideLoading();
+                }
+            });
 
-            saveSettingsBtn.addEventListener('click', () => {
-                document.documentElement.style.setProperty('--global-font-size', fontSizeSelect.value);
-                document.documentElement.style.setProperty('--card-radius', cardRadiusSelect.value);
-                const selectedAnim = document.querySelector('input[name="chartAnimation"]:checked').value;
-                isAnimationEnabled = selectedAnim === '1';
-                
-                const selectedTheme = document.querySelector('input[name="theme"]:checked').value;
-                applyTheme(selectedTheme);
-                
+            document.querySelector('.close-gh-modal')?.addEventListener('click', () => {
+                document.getElementById('ghAuthModal').classList.remove('visible');
+            });
+
+            // --- 系统设置逻辑 ---
+            const settingsModal = document.getElementById('settingsModal');
+            document.querySelector('.close-settings-modal').addEventListener('click', () => settingsModal.classList.remove('visible'));
+            document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+                const theme = document.querySelector('input[name="theme"]:checked').value;
+                document.body.setAttribute('data-theme', theme === 'auto' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme);
+                localStorage.setItem('board_theme', theme);
+
+                const fontSize = document.getElementById('fontSizeSelect').value;
+                document.documentElement.style.setProperty('--global-font-size', fontSize);
+                localStorage.setItem('board_font_size', fontSize);
+
+                const cardRadius = document.getElementById('cardRadiusSelect').value;
+                document.documentElement.style.setProperty('--card-radius', cardRadius);
+                localStorage.setItem('board_card_radius', cardRadius);
+
+                const anim = document.querySelector('input[name="chartAnimation"]:checked').value;
+                isAnimationEnabled = anim === '1';
+                localStorage.setItem('board_animation', anim);
+
                 settingsModal.classList.remove('visible');
                 debouncedFullRefresh();
-                showToast('✅ 全局个性设置应用成功！');
+                showToast('✅ 系统设置已应用');
             });
 
-            resetSettingsBtn.addEventListener('click', () => {
-                fontSizeSelect.value = "100%";
-                cardRadiusSelect.value = "28px";
+            document.getElementById('resetSettingsBtn').addEventListener('click', () => {
                 document.querySelector('input[name="theme"][value="light"]').checked = true;
+                document.getElementById('fontSizeSelect').value = '100%';
+                document.getElementById('cardRadiusSelect').value = '28px';
                 document.querySelector('input[name="chartAnimation"][value="1"]').checked = true;
-                
-                document.documentElement.style.setProperty('--global-font-size', '100%');
-                document.documentElement.style.setProperty('--card-radius', '28px');
-                isAnimationEnabled = true;
-                applyTheme('light');
-                
-                settingsModal.classList.remove('visible');
-                debouncedFullRefresh();
-                showToast('🔄 已初始化全局默认配置');
+                document.getElementById('saveSettingsBtn').click();
             });
 
-            const savedTheme = localStorage.getItem('theme') || 'light';
-            const themeInput = document.querySelector(`input[name="theme"][value="${savedTheme}"]`);
-            if(themeInput) themeInput.checked = true;
-            applyTheme(savedTheme);
-            
-            const resizeObserver = new ResizeObserver(() => {
-                if(trendChart) trendChart.resize();
-                if(personStackChart) personStackChart.resize();
-                if(issueTypeChart) issueTypeChart.resize();
+            // 初始化设置
+            function initSettings() {
+                const theme = localStorage.getItem('board_theme') || 'light';
+                const el = document.querySelector(`input[name="theme"][value="${theme}"]`);
+                if(el) el.checked = true;
+                document.body.setAttribute('data-theme', theme === 'auto' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme);
+
+                const fontSize = localStorage.getItem('board_font_size') || '100%';
+                document.getElementById('fontSizeSelect').value = fontSize;
+                document.documentElement.style.setProperty('--global-font-size', fontSize);
+
+                const cardRadius = localStorage.getItem('board_card_radius') || '28px';
+                document.getElementById('cardRadiusSelect').value = cardRadius;
+                document.documentElement.style.setProperty('--card-radius', cardRadius);
+
+                const anim = localStorage.getItem('board_animation') || '1';
+                const animEl = document.querySelector(`input[name="chartAnimation"][value="${anim}"]`);
+                if(animEl) animEl.checked = true;
+                isAnimationEnabled = anim === '1';
+            }
+
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+                if(localStorage.getItem('board_theme') === 'auto') document.body.setAttribute('data-theme', e.matches ? 'dark' : 'light');
             });
-            resizeObserver.observe(document.getElementById('mainContent'));
-            
+
+            window.addEventListener('resize', () => {
+                if (trendChart) trendChart.resize();
+                if (personStackChart) personStackChart.resize();
+                if (issueTypeChart) issueTypeChart.resize();
+            });
+
             function initDataLoad() {
+                initSettings();
                 fetchRemoteData();
             }
+            
             checkAuth();
 
+            // 同步历史面板初始化
+            const header = document.getElementById('syncLogHeader');
+            const body = document.getElementById('syncLogBody');
+            const chevron = document.getElementById('syncLogChevron');
+            const clearBtn = document.getElementById('clearSyncLogBtn');
+            if (header && body && chevron) {
+                header.addEventListener('click', () => {
+                    if (body.classList.contains('hidden')) {
+                        body.classList.remove('hidden');
+                        chevron.style.transform = 'rotate(180deg)';
+                    } else {
+                        body.classList.add('hidden');
+                        chevron.style.transform = 'rotate(0deg)';
+                    }
+                });
+            }
+            if (clearBtn) {
+                clearBtn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    if (confirm('确定要清空所有同步历史记录吗？')) {
+                        localStorage.removeItem('sync_log');
+                        initRenderSyncLog();
+                        showToast('🗑️ 同步历史已清空');
+                    }
+                });
+            }
+            initRenderSyncLog();
+
         })();
-    
-            // 同步历史面板初始化（放在脚本末尾确保 DOM 就绪）
-            (function() {
-                const header = document.getElementById('syncLogHeader');
-                const body = document.getElementById('syncLogBody');
-                const chevron = document.getElementById('syncLogChevron');
-                const clearBtn = document.getElementById('clearSyncLogBtn');
-                if (header && body && chevron) {
-                    header.addEventListener('click', () => {
-                        if (body.classList.contains('hidden')) {
-                            body.classList.remove('hidden');
-                            chevron.style.transform = 'rotate(180deg)';
-                        } else {
-                            body.classList.add('hidden');
-                            chevron.style.transform = 'rotate(0deg)';
-                        }
-                    });
-                }
-                if (clearBtn) {
-                    clearBtn.addEventListener('click', e => {
-                        e.stopPropagation();
-                        if (confirm('确定要清空所有同步历史记录吗？')) {
-                            localStorage.removeItem('sync_log');
-                            initRenderSyncLog();
-                            showToast('🗑️ 同步历史已清空');
-                        }
-                    });
-                }
-                initRenderSyncLog();
-            })();</script>
+    </script>
 </body>
 </html>
